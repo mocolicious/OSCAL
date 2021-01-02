@@ -28,7 +28,7 @@
            A post-process (filter) will be applied to remove them in a later stage. -->
     
     <xsl:template match="* | @*" mode="#all">
-        <xsl:copy>
+        <xsl:copy copy-namespaces="no">
             <xsl:apply-templates mode="#current" select="node() | @*"/>
         </xsl:copy>
     </xsl:template>
@@ -36,21 +36,26 @@
     <!-- Making the default handling explicit. -->
     <xsl:template match="comment() | processing-instruction()" mode="#all"/>
     
-<!-- We catch the unmoded template only once, at the top; other matches will be in mode o:select   -->
+    <!-- We catch the unmoded template only once, at the top; other matches will be in mode o:select   -->
     <xsl:template match="profile">
-        <xsl:copy>
+        <xsl:copy copy-namespaces="no">
             <xsl:apply-templates mode="o:select" select="node() | @*">
                 <xsl:with-param name="uri-stack" tunnel="yes" select="$uri-stack-in"/>
             </xsl:apply-templates>
         </xsl:copy>
     </xsl:template>
     
+<!-- We reach a profile document in mode o:select only by way of an import/@href (see below)
+     when we do, we have to see to it that we haven't already been called; if
+     not, we execute the Ourobouros function, which calls the parent wrapper RESOLVE pipeline
+     to return a catalog. -->
     <xsl:template match="profile" mode="o:select">
         <!-- $uri-stack contains an import call stack trace from the point of entry -->
         <xsl:param name="uri-stack" tunnel="yes" select="()"/>
-        <xsl:variable name="uri-here" select="document-uri(root())"/>
+        <xsl:variable name="uri-here" select="base-uri(.)"/>
         <xsl:if test="not($uri-here = $uri-stack)">
-            <xsl:copy>
+          <!--<xsl:sequence select="o:resolve-profile(.,$uri-stack)"/>-->
+            <xsl:copy copy-namespaces="no">
                 <opr:warning>
                     <xsl:text>profile '</xsl:text>
                     <xsl:value-of select="$uri-here"/>
@@ -79,6 +84,7 @@
     </xsl:template>-->
     
     <xsl:key name="cross-reference" match="resource" use="'#' || @id"/>
+    <xsl:key name="cross-reference" match="resource" use="'#' || @uuid"/>
     
     <xsl:template priority="2" mode="o:select" match="import[starts-with(@href,'#')]">
         <xsl:apply-templates mode="o:import" select="key('cross-reference',@href)">
@@ -98,7 +104,7 @@
     
     <!-- We want a group even if there is nothing to put in it, for potential merging downstream  -->
     <xsl:template match="group" mode="o:select">
-        <xsl:copy>
+        <xsl:copy copy-namespaces="no">
             <!-- add an ID for downstream processing when the source has none -->
             <xsl:call-template name="add-process-id"/>    
             <xsl:apply-templates mode="o:select" select="node() | @*"/>
@@ -114,14 +120,14 @@
     
     <xsl:function name="opr:catalog-identifier" as="xs:string">
         <xsl:param name="catalog" as="element(o:catalog)"/>
-        <xsl:sequence select="$catalog/(@canonical-id,@id,document-uri(root(.)))[1]"/>
+        <xsl:sequence select="$catalog/(@uuid,document-uri(root(.)))[1]"/>
     </xsl:function>
     
     <!-- A control is included if it is selected by the provided import instruction -->
     <xsl:template match="control" mode="o:select">
         <xsl:param name="import-instruction" tunnel="yes" required="yes"/>
         <xsl:if test="o:selects($import-instruction,.)">
-            <xsl:copy>
+            <xsl:copy copy-namespaces="no">
                 <xsl:call-template name="add-process-id"/>    
                 <xsl:apply-templates mode="#current" select="node() | @*"/>
             </xsl:copy>
@@ -130,7 +136,7 @@
     
     <!-- Parameters are always passed through until later stages. -->
     <xsl:template match="param" mode="o:select">
-        <xsl:copy>
+        <xsl:copy copy-namespaces="no">
             <xsl:call-template name="add-process-id"/>    
             <xsl:apply-templates mode="#current" select="node() | @*"/>
         </xsl:copy>
@@ -205,6 +211,34 @@
                 </xsl:document>
             </xsl:otherwise>
         </xsl:choose>
+    </xsl:function>
+    
+    <xsl:function name="o:resolve-profile">
+        <xsl:param name="profile" as="element(profile)"/>
+        <xsl:param name="uri-stack" as="xs:anyURI*"/>
+        <xsl:variable name="runtime-params" as="map(xs:QName,item()*)">
+            <xsl:map>
+                <xsl:map-entry key="QName('','profile-origin-uri')" select="base-uri($profile)"/>
+                <xsl:map-entry key="QName('','path-to-source')"     select="'.'"/>
+                <xsl:map-entry key="QName('','uri-stack-in')"       select="$uri-stack"/>
+            </xsl:map>
+        </xsl:variable>
+        <xsl:variable name="runtime" as="map(xs:string, item())">
+            <xsl:map>
+                <xsl:map-entry key="'xslt-version'"        select="3.0"/>
+                <xsl:map-entry key="'stylesheet-location'" select="'../oscal-profile-RESOLVE.xsl'"/>
+                <xsl:map-entry key="'source-node'"         select="root($profile)"/>
+                <xsl:map-entry key="'stylesheet-params'"   select="$runtime-params"/>
+            </xsl:map>
+        </xsl:variable>
+        
+        <!-- The function returns a map; primary results are under 'output'
+             unless a base output URI is given
+             https://www.w3.org/TR/xpath-functions-31/#func-transform -->
+        <xsl:sequence select="transform($runtime)?output"/>
+        <!--<xsl:call-template name="alert">
+            <xsl:with-param name="msg" expand-text="true"> ... applied step { count(.|preceding-sibling::*) }: XSLT { $xslt-spec } ... </xsl:with-param>
+        </xsl:call-template>-->
     </xsl:function>
     
 

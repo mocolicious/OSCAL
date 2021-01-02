@@ -13,6 +13,7 @@ references:
       SCHEMATRON_HOME: git-schematron
       TERM: xterm
       BUNDLER_VERSION: 2.0.2
+      HUGO_VERSION: 0.69.2
     working_directory: ~/oscal
   attach_build_workspace: &attach_build_workspace
     attach_workspace:
@@ -78,21 +79,6 @@ commands:
           name: Get Saxon-HE
           command: |
             mvn org.apache.maven.plugins:maven-dependency-plugin:2.10:get -DartifactId=Saxon-HE -DgroupId=net.sf.saxon -Dversion=$SAXON_VERSION
-      - run:
-          name: Build JSON Validation CLI
-          command: |
-            # update maven version
-            cd /opt
-            sudo wget "https://archive.apache.org/dist/maven/maven-3/${MAVEN_VERSION}/binaries/apache-maven-${MAVEN_VERSION}-bin.tar.gz"
-            sudo tar -xvzf "apache-maven-${MAVEN_VERSION}-bin.tar.gz"
-            sudo mv "apache-maven-${MAVEN_VERSION}" maven
-            export M2_HOME=/opt/maven
-            export PATH=${M2_HOME}/bin:${PATH}
-            cd -
-            # now build
-            cd "${OSCAL_TOOLS_DIR}/json-cli"
-            /opt/maven/bin/mvn dependency:go-offline
-            /opt/maven/bin/mvn install
       - save_cache:
           paths:
             - ~/.m2
@@ -110,11 +96,11 @@ commands:
       - run:
           name: Get Hugo
           command: |
-            wget https://github.com/gohugoio/hugo/releases/download/v0.58.3/hugo_extended_0.58.3_Linux-64bit.deb
+            wget https://github.com/gohugoio/hugo/releases/download/v${HUGO_VERSION}/hugo_extended_${HUGO_VERSION}_Linux-64bit.deb
       - run:
           name: Install Hugo
           command: |
-            sudo apt-get install ./hugo_extended_0.58.3_Linux-64bit.deb
+            sudo apt-get install ./hugo_extended_${HUGO_VERSION}_Linux-64bit.deb
   install-pip-lxml:
     description: "Installs Python lxml package"
     steps:
@@ -129,13 +115,13 @@ commands:
           name: Get xmllint
           command: |
             sudo apt-get install libxml2-utils
-  #install-npm-ajv:
-  #  description: "Install ajv"
-  #  steps:
-  #    - run:
-  #        name: Get ajv
-  #        command: |
-  #          sudo npm install -g ajv-cli
+  install-npm-ajv:
+    description: "Install ajv"
+    steps:
+      - run:
+          name: Get ajv
+          command: |
+            sudo npm install -g ajv-cli
   install-npm-json-diff:
     description: "Install json-diff"
     steps:
@@ -258,6 +244,7 @@ jobs: # a collection of
       - install-maven-dependencies
       - apt-update
       - install-apt-xmllint
+      - install-npm-ajv
       - run:
           name: Generate OSCAL schemas
           command: |
@@ -286,27 +273,6 @@ jobs: # a collection of
           paths:
             - xml
             - json
-  job-copy-and-convert-content:
-    executor: java-executor
-    steps: # a collection of executable commands
-      - *checkout
-      - *checkout-submodules
-      - *attach_build_workspace
-      - check-skip-build
-      - install-maven-dependencies
-      - apt-update
-      - install-apt-jq
-      - install-npm-prettyjson
-      - install-apt-xmllint
-      - run:
-          name: Copy and convert OSCAL content to alternate formats
-          command: |
-            bash "$CICD_DIR/copy-and-convert-content.sh" -w "$OSCAL_BUILD_DIR" -v --resolve-profiles
-      - *publish_artifacts
-      - persist_to_workspace:
-          root: build_artifacts
-          paths:
-            - content # not needed?
   job-validate-markdown:
     executor: java-executor
     steps:
@@ -321,38 +287,6 @@ jobs: # a collection of
             cd "$REPO_DIR"
             # this command will filter out any docs Markdown files, which are checked in a different job
             git ls-files "*/*.md" -z | grep --null-data -v "^docs/" | xargs -0 -n1 markdown-link-check -q -c "build/config/.markdown-link-check/config.json"
-  job-validate-content:
-    executor: java-executor
-    steps:
-      - *checkout
-      - *checkout-submodules
-      - *attach_build_workspace
-      - check-skip-build
-      - apt-update
-      - install-apt-xmllint
-      - install-maven-dependencies
-      - run:
-          name: Validate content instances
-          command: |
-            bash "$CICD_DIR/validate-content.sh" -w "$OSCAL_BUILD_DIR"
-  job-roundtrip-conversions:
-    executor: python-executor
-    steps:
-      - *checkout
-      - *checkout-submodules
-      - *attach_build_workspace
-      - check-skip-build
-      - apt-update
-      - install-apt-maven
-      - install-maven-dependencies
-      - install-pip-lxml
-      - install-apt-xmllint
-      - install-npm-json-diff
-      - run:
-          name: Generate round trip XML and JSON conversions
-          command: |
-            bash "${CICD_DIR}/validate-content-conversion-round-trips.sh" -w "$OSCAL_BUILD_DIR" --scratch-dir "$OSCAL_BUILD_DIR"
-      - *publish_artifacts
   job-generate-docs:
     executor: java-executor
     steps:
@@ -387,39 +321,41 @@ jobs: # a collection of
       - deploy: # delete and copy artifacts before deploy
           name: Commit Artifacts
           command: |
-            cd "$REPO_DIR"
-            # Remove existing generated files
-            git rm -r --ignore-unmatch xml/convert/*.xsl
-            git rm -r --ignore-unmatch xml/schema/*.xsd
-            git rm -r --ignore-unmatch json/convert/*.xsl
-            git rm -r --ignore-unmatch json/schema/*.json
-            git rm -r --ignore-unmatch content/**/*.xml
-            git rm -r --ignore-unmatch content/**/*.json
-            git rm -r --ignore-unmatch content/**/*.yaml
-            # Copy new built files to repo
-            cd -
-            cp -r "$OSCAL_BUILD_DIR"/* "$REPO_DIR"
-            cd "$REPO_DIR"
-            # add the new files
-            git add -f --all xml
-            git add -f --all json
-            git add -f --all content
-            # check for changes
-            echo "Changed files:"
+            if ls ${OSCAL_BUILD_DIR}/*  1> /dev/null 2>&1 ; then
+              cd "$REPO_DIR"
+              # Remove existing generated files
+              git rm -r --ignore-unmatch xml/convert/*.xsl
+              git rm -r --ignore-unmatch xml/schema/*.xsd
+              git rm -r --ignore-unmatch json/convert/*.xsl
+              git rm -r --ignore-unmatch json/schema/*.json
+              # Copy new built files to repo
+              cd -
+              cp -r "$OSCAL_BUILD_DIR"/* "$REPO_DIR"
+              cd "$REPO_DIR"
+              # add the new files
+              git add -f --all xml
+              git add -f --all json
 
-            if ! $(git diff --exit-code --name-only HEAD~1 xml json content); then
-              # Only deploy if something relevant has changed
-              # Setup deployment
-              git config user.name "Deployment Bot"
-              git commit --allow-empty -m "Deploying content [ci deploy skip]"
-              # Ensure we are deploying against the latest
-              git fetch
-              git rebase origin/master
-              # deploy
-              git push
+              # check for changes
+              echo "Changed files:"
+
+              if ! $(git diff --exit-code --name-only HEAD~1 xml json content); then
+                # Only deploy if something relevant has changed
+                # Setup deployment
+                git config user.name "Deployment Bot"
+                git commit --allow-empty -m "Deploying content [ci deploy skip]"
+                # Ensure we are deploying against the latest
+                git fetch
+                git rebase origin/master
+                # deploy
+                git push
+              else
+                echo "  No files changed"
+              fi
             else
-              echo "  No files changed"
+              echo "  No changes to process"
             fi
+
       - *publish_artifacts
   job-validate-site-content:
     executor: ruby-node-executor
@@ -503,15 +439,16 @@ jobs: # a collection of
       - check-skip-build
       - apt-update
       - install-apt-xmllint
+      - install-npm-ajv
       - install-maven-dependencies
       - run:
           name: Run Content Unit Tests
           command: |
             bash "$CICD_DIR/run-unittests.sh" -w "$OSCAL_BUILD_DIR"
-      - run:
-          name: Run Profile Resolution Unit Tests
-          command: |
-            bash "$CICD_DIR/test-profile-resolution.sh" -w "$OSCAL_BUILD_DIR"
+#      - run:
+#          name: Run Profile Resolution Unit Tests
+#          command: |
+#            bash "$CICD_DIR/test-profile-resolution.sh" -w "$OSCAL_BUILD_DIR"
 workflows:
   version: 2
   build:
@@ -546,17 +483,6 @@ workflows:
       - job-generate-converters:
           requires:
             - job-validate-metaschema
-      - job-validate-content:
-          requires:
-            - job-generate-schema
-      - job-roundtrip-conversions:
-          requires:
-            - job-generate-converters
-            - job-validate-content
-      - job-copy-and-convert-content:
-           requires:
-            - job-generate-converters
-            - job-validate-content
       - job-generate-docs:
           requires:
             - job-generate-schema
@@ -571,11 +497,12 @@ workflows:
                 - master
                 - nist-pages
       - job-deploy-artifacts:
-          requires:
-            - job-copy-and-convert-content
           filters:
             branches:
               only: master
+          requires:
+            - job-generate-schema
+            - job-generate-converters
       - job-build-and-deploy-website:
           requires:
             - job-generate-docs
